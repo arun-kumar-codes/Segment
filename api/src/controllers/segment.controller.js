@@ -1,136 +1,85 @@
-import { PrismaClient, DegreeType, JobSeekingInterest, MajorCategory } from '@prisma/client';
+import { SegmentService } from '../services/segment.service.js';
+import { successResponse, paginatedResponse } from '../utils/response.util.js';
+import { ApiError } from '../middlewares/error.middleware.js';
 
-const prisma = new PrismaClient();
-
-export const createSegment = async (req, res) => {
+/**
+ * Create a new segment
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+export const createSegment = async (req, res, next) => {
     try {
-        const {
-            segmentName,
-            college,
-            profileKeyword,
-            majorGroup,
-            majorKeyword,
-            majorCategory,
-            graduationClassStanding,
-            degreeTypes,
-            gpaMin,
-            gpaMax,
-            organizations,
-            jobRoleInterests,
-            studentIndustryInterests,
-            jobSeekingInterests,
-            studentLocationPreferences,
-            currentLocation,
-            desiredSkills,
-            coursework,
-            workExperience,
-            owner,
-            studentCount,
-            IsActive = true,
-        } = req.body;
-
-        const createdSegment = await prisma.segment.create({
-            data: {
-                segmentName,
-                college,
-                profileKeyword,
-                majorGroup,
-                majorKeyword,
-                majorCategory,
-                graduationClassStanding,
-                degreeTypes,
-                gpaMin,
-                gpaMax,
-                organizations,
-                jobRoleInterests,
-                studentIndustryInterests,
-                jobSeekingInterests,
-                studentLocationPreferences,
-                currentLocation,
-                desiredSkills,
-                coursework,
-                workExperience: {
-                    create: workExperience.map((exp) => ({
-                        jobTitle: exp.jobTitle,
-                        company: exp.company,
-                        isCurrent: exp.isCurrent || false,
-                    })),
-                },
-                owner,
-                studentCount,
-                IsActive,
-            },
-        });
-
-        res.status(201).json({ success: true, data: createdSegment, message: "Segment created successfully" });
+        const segmentData = req.body;
+        const createdSegment = await SegmentService.createSegment(segmentData);
+        return successResponse(res, 201, createdSegment, "Segment created successfully");
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: error.message });
+        next(error);
     }
-}
+};
 
-export const getSegments = async (req, res) => {
+/**
+ * Get paginated segments
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+export const getSegments = async (req, res, next) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const active = req.query.active === 'false' ? false : true;
-        const skip = (page - 1) * limit;
 
-        const [segments, totalCount] = await Promise.all([
-            prisma.segment.findMany({
-                where: {
-                    IsActive: active, // only active segments
-                },
-                skip,
-                take: limit,
-                orderBy: {
-                    createdAt: 'desc',
-                },
-                select: {
-                    id: true,
-                    segmentName: true,
-                    createdAt: true,
-                    studentCount: true,
-                    college: true,
-                    owner: true,
-                },
-            }),
-            prisma.segment.count({
-                where: {
-                    IsActive: true,
-                },
-            }),
-        ]);
-
-        res.status(200).json({
-            success: true,
-            data: segments,
-            totalCount,
-            totalPages: Math.ceil(totalCount / limit),
-            currentPage: page,
+        const { segments, totalCount } = await SegmentService.getSegments({
+            page,
+            limit,
+            active
         });
+
+        return paginatedResponse(res, segments, totalCount, page, limit);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: 'Failed to fetch segments' });
+        next(error);
     }
 };
 
-export const updateSegmentStatus = async (req, res) => {
+/**
+ * Update segment active status
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+export const updateSegmentStatus = async (req, res, next) => {
     try {
         const { id } = req.query;
-        const IsActive = req.body.IsActive;
-        if (typeof IsActive !== 'boolean') {
-            return res.status(400).json({ success: false, message: 'IsActive must be a boolean' });
+        const { IsActive } = req.body;
+
+        const updatedSegment = await SegmentService.updateSegmentStatus(id, IsActive);
+        return successResponse(res, 200, updatedSegment, "Segment status updated successfully");
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * Get segment by ID
+ * 
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ */
+export const getSegmentById = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        if (!id) {
+            throw new ApiError(400, "Segment ID is required");
         }
 
-        const updatedSegment = await prisma.segment.update({
-            where: { id },
-            data: { IsActive },
-        });
-
-        res.status(200).json({ success: true, data: updatedSegment, message: 'Segment status updated' });
+        const segment = await SegmentService.getSegmentById(id);
+        return successResponse(res, 200, segment);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: 'Failed to update segment status' });
+        next(error);
     }
 };

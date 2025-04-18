@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -20,10 +20,25 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Checkbox } from "@/components/ui/checkbox";
-import axiosInstance from "../axios/axiosInstance";
+import { segmentApi } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+
+// Form validation types
+interface ValidationError {
+  field: string;
+  message: string;
+}
 
 export default function CreateSegmentPage() {
-  const [formData, setFormData] = useState({
+  const router = useRouter();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  const [acceptTerms, setAcceptTerms] = useState(false);
+
+  const initialFormState = {
     segmentName: "",
     college: "",
     profileKeyword: "",
@@ -46,16 +61,32 @@ export default function CreateSegmentPage() {
     owner: "admin-user-1234",
     studentCount: 0,
     IsActive: true
-  });
+  };
+
+  const [formData, setFormData] = useState(initialFormState);
+
+  // Reset success message after 3 seconds
+  useEffect(() => {
+    let timeout: NodeJS.Timeout;
+    if (isSuccess) {
+      timeout = setTimeout(() => {
+        setIsSuccess(false);
+      }, 3000);
+    }
+    return () => clearTimeout(timeout);
+  }, [isSuccess]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({
       ...prev,
-      [name]: name === 'gpaMin' || name === 'gpaMax' || name === 'studentCount' 
-        ? parseFloat(value) || 0 
+      [name]: name === 'gpaMin' || name === 'gpaMax' || name === 'studentCount'
+        ? parseFloat(value) || 0
         : value
     }));
+
+    // Clear validation error for this field when user starts typing
+    setValidationErrors(prev => prev.filter(error => error.field !== name));
   };
 
   const handleSelectChange = (name: string, value: string) => {
@@ -63,14 +94,20 @@ export default function CreateSegmentPage() {
       ...prev,
       [name]: value
     }));
+
+    // Clear validation error for this field
+    setValidationErrors(prev => prev.filter(error => error.field !== name));
   };
 
   const handleArrayInputChange = (name: string, value: string) => {
-    const values = value.split(',').map(v => v.trim());
+    const values = value.split(',').map(v => v.trim()).filter(v => v !== '');
     setFormData(prev => ({
       ...prev,
       [name]: values
     }));
+
+    // Clear validation error for this field
+    setValidationErrors(prev => prev.filter(error => error.field !== name));
   };
 
   const handleWorkExperienceChange = (index: number, field: 'jobTitle' | 'company', value: string) => {
@@ -85,83 +122,127 @@ export default function CreateSegmentPage() {
         workExperience: newWorkExperience
       };
     });
+
+    // Clear validation error for work experience
+    setValidationErrors(prev => prev.filter(error => error.field !== 'workExperience'));
   };
 
-  const handleSubmit = async(e: React.FormEvent) => {
+  // Validate form
+  const validateForm = (): boolean => {
+    const errors: ValidationError[] = [];
+
+    if (!formData.segmentName.trim()) {
+      errors.push({ field: 'segmentName', message: 'Segment name is required' });
+    }
+
+    if (formData.gpaMin > formData.gpaMax && formData.gpaMax > 0) {
+      errors.push({ field: 'gpaMin', message: 'Minimum GPA should be less than maximum GPA' });
+    }
+
+    if (formData.gpaMax > 4.0) {
+      errors.push({ field: 'gpaMax', message: 'Maximum GPA cannot exceed 4.0' });
+    }
+
+    // Validate work experience entries (if any are partially filled)
+    const hasPartialWorkExp = formData.workExperience.some(exp =>
+      (exp.jobTitle && !exp.company) || (!exp.jobTitle && exp.company)
+    );
+
+    if (hasPartialWorkExp) {
+      errors.push({ field: 'workExperience', message: 'Please complete all work experience fields' });
+    }
+
+    // Check if terms are accepted
+    if (!acceptTerms) {
+      errors.push({ field: 'terms', message: 'You must accept the terms and conditions' });
+    }
+
+    setValidationErrors(errors);
+    return errors.length === 0;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Validate form
+    if (!validateForm()) {
+      // Show toast for validation errors
+      toast.error("Please fix the errors before submitting");
+      return;
+    }
+
     try {
+      setIsSubmitting(true);
+
       const payload = {
         ...formData,
-        workExperience: formData.workExperience.map(exp => ({
-          jobTitle: exp.jobTitle,
-          company: exp.company,
-          isCurrent: exp.isCurrent
-        }))
+        workExperience: formData.workExperience
+          .filter(exp => exp.jobTitle && exp.company) // Only include complete entries
+          .map(exp => ({
+            jobTitle: exp.jobTitle,
+            company: exp.company,
+            isCurrent: exp.isCurrent
+          }))
       };
-      const res = await axiosInstance.post('api/v1/segment/create', payload);
-      setFormData({
-        segmentName: "",
-        college: "",
-        profileKeyword: "",
-        majorGroup: "",
-        majorKeyword: "",
-        majorCategory: "STEAM",
-        graduationClassStanding: "",
-        degreeTypes: [] as string[],
-        gpaMin: 0,
-        gpaMax: 0,
-        organizations: [] as string[],
-        jobRoleInterests: [] as string[],
-        studentIndustryInterests: [] as string[],
-        jobSeekingInterests: [] as string[],
-        studentLocationPreferences: "",
-        currentLocation: "",
-        desiredSkills: [] as string[],
-        coursework: [] as string[],
-        workExperience: [] as Array<{ jobTitle: string; company: string; isCurrent: boolean }>,
-        owner: "admin-user-1234",
-        studentCount: 0,
-        IsActive: true
-      })
+
+      const res = await segmentApi.createSegment(payload);
+
+      // Show success message
+      setIsSuccess(true);
+      toast.success("Segment created successfully!");
+
+      // Reset form
+      setFormData(initialFormState);
+      setAcceptTerms(false);
+
+      // Optional: Redirect to segments list after a delay
+      setTimeout(() => {
+        router.push('/');
+      }, 2000);
+
     } catch (error) {
       console.error('Error creating segment:', error);
+      toast.error("Failed to create segment. Please try again.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const resetForm = () => {
-    setFormData({
-      segmentName: "",
-      college: "",
-      profileKeyword: "",
-      majorGroup: "",
-      majorKeyword: "",
-      majorCategory: "STEAM",
-      graduationClassStanding: "",
-      degreeTypes: [],
-      gpaMin: 0,
-      gpaMax: 0,
-      organizations: [],
-      jobRoleInterests: [],
-      studentIndustryInterests: [],
-      jobSeekingInterests: [],
-      studentLocationPreferences: "",
-      currentLocation: "",
-      desiredSkills: [],
-      coursework: [],
-      workExperience: [],
-      owner: "admin-user-1234",
-      studentCount: 0,
-      IsActive: true
-    });
+    setFormData(initialFormState);
+    setValidationErrors([]);
+    setAcceptTerms(false);
+  };
+
+  // Helper to get error for a specific field
+  const getFieldError = (field: string): string => {
+    const error = validationErrors.find(err => err.field === field);
+    return error ? error.message : '';
   };
 
   return (
-    <div className="relative bg-[#F9F9F9] w-full min-h-screen ">
+    <div className="relative bg-[#F9F9F9] w-full min-h-screen">
       <div className="container mx-auto px-4 py-6 pt-[119px]">
         <div className="flex justify-between items-center mb-6 bg-white rounded-lg shadow-sm px-6 py-3 w-full">
           <h1 className="text-xl font-semibold">Create Segment</h1>
-          <Button className="bg-blue-600 hover:bg-blue-700" onClick={handleSubmit}>
-            Save Segment
+          <Button
+            className={`${isSuccess ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+            onClick={handleSubmit}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : isSuccess ? (
+              <>
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                Saved!
+              </>
+            ) : (
+              'Save Segment'
+            )}
           </Button>
         </div>
 
@@ -169,7 +250,7 @@ export default function CreateSegmentPage() {
           {/* Left Column - Form */}
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white rounded-md border shadow-sm w-full">
-              <Accordion type="single" collapsible className="w-full">
+              <Accordion type="single" collapsible className="w-full" defaultValue="academics">
                 <AccordionItem value="academics">
                   <AccordionTrigger className="px-4 py-3">
                     Academics & Extracurriculars
@@ -178,20 +259,33 @@ export default function CreateSegmentPage() {
                     <div className="p-6 space-y-6">
                       {/* Segment Name */}
                       <div className="space-y-2">
-                        <Label htmlFor="segment-name">Segment Name</Label>
-                        <Input 
-                          id="segment-name" 
+                        <Label htmlFor="segment-name" className="flex items-center">
+                          Segment Name
+                          <span className="text-red-500 ml-1">*</span>
+                        </Label>
+                        <Input
+                          id="segment-name"
                           name="segmentName"
                           value={formData.segmentName}
                           onChange={handleInputChange}
-                          placeholder="Name" 
+                          placeholder="Name"
+                          className={getFieldError('segmentName') ? 'border-red-500' : ''}
                         />
+                        {getFieldError('segmentName') && (
+                          <p className="text-sm text-red-500 flex items-center mt-1">
+                            <AlertCircle className="h-4 w-4 mr-1" />
+                            {getFieldError('segmentName')}
+                          </p>
+                        )}
                       </div>
 
                       {/* College */}
                       <div className="space-y-2">
                         <Label htmlFor="college">College</Label>
-                        <Select onValueChange={(value) => handleSelectChange('college', value)}>
+                        <Select
+                          onValueChange={(value) => handleSelectChange('college', value)}
+                          value={formData.college}
+                        >
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select College" />
                           </SelectTrigger>
@@ -207,7 +301,10 @@ export default function CreateSegmentPage() {
                       {/* Profile keyword */}
                       <div className="space-y-2">
                         <Label htmlFor="profile-keyword">Profile keyword</Label>
-                        <Select onValueChange={(value) => handleSelectChange('profileKeyword', value)}>
+                        <Select
+                          onValueChange={(value) => handleSelectChange('profileKeyword', value)}
+                          value={formData.profileKeyword}
+                        >
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="Keywords" />
                           </SelectTrigger>
@@ -222,7 +319,10 @@ export default function CreateSegmentPage() {
                       {/* Major Group */}
                       <div className="space-y-2">
                         <Label htmlFor="major-group">Major Group</Label>
-                        <Select onValueChange={(value) => handleSelectChange('majorGroup', value)}>
+                        <Select
+                          onValueChange={(value) => handleSelectChange('majorGroup', value)}
+                          value={formData.majorGroup}
+                        >
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="+ Add Major Group" />
                           </SelectTrigger>
@@ -238,7 +338,10 @@ export default function CreateSegmentPage() {
                       {/* Major keyword */}
                       <div className="space-y-2">
                         <Label htmlFor="major-keyword">Major keyword</Label>
-                        <Select onValueChange={(value) => handleSelectChange('majorKeyword', value)}>
+                        <Select
+                          onValueChange={(value) => handleSelectChange('majorKeyword', value)}
+                          value={formData.majorKeyword}
+                        >
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="+ Add Major keyword" />
                           </SelectTrigger>
@@ -276,7 +379,10 @@ export default function CreateSegmentPage() {
                       {/* Graduation and class standing */}
                       <div className="space-y-2">
                         <Label htmlFor="graduation">Graduation and class standing</Label>
-                        <Select onValueChange={(value) => handleSelectChange('graduationClassStanding', value)}>
+                        <Select
+                          onValueChange={(value) => handleSelectChange('graduationClassStanding', value)}
+                          value={formData.graduationClassStanding}
+                        >
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select Year" />
                           </SelectTrigger>
@@ -323,18 +429,38 @@ export default function CreateSegmentPage() {
                       <div className="space-y-2">
                         <Label>GPA</Label>
                         <div className="flex gap-4">
-                          <Input 
-                            placeholder="From" 
-                            name="gpaMin"
-                            value={formData.gpaMin.toString()}
-                            onChange={handleInputChange}
-                          />
-                          <Input 
-                            placeholder="To" 
-                            name="gpaMax"
-                            value={formData.gpaMax.toString()}
-                            onChange={handleInputChange}
-                          />
+                          <div className="w-full">
+                            <Input
+                              placeholder="From"
+                              name="gpaMin"
+                              value={formData.gpaMin.toString()}
+                              onChange={handleInputChange}
+                              className={getFieldError('gpaMin') ? 'border-red-500' : ''}
+                              type="number"
+                              min="0"
+                              max="4.0"
+                              step="0.1"
+                            />
+                            {getFieldError('gpaMin') && (
+                              <p className="text-sm text-red-500 mt-1">{getFieldError('gpaMin')}</p>
+                            )}
+                          </div>
+                          <div className="w-full">
+                            <Input
+                              placeholder="To"
+                              name="gpaMax"
+                              value={formData.gpaMax.toString()}
+                              onChange={handleInputChange}
+                              className={getFieldError('gpaMax') ? 'border-red-500' : ''}
+                              type="number"
+                              min="0"
+                              max="4.0"
+                              step="0.1"
+                            />
+                            {getFieldError('gpaMax') && (
+                              <p className="text-sm text-red-500 mt-1">{getFieldError('gpaMax')}</p>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -345,6 +471,7 @@ export default function CreateSegmentPage() {
                           id="organizations"
                           placeholder="+ Add Organizations / Extracurriculars (comma separated)"
                           onChange={(e) => handleArrayInputChange('organizations', e.target.value)}
+                          value={formData.organizations.join(', ')}
                         />
                       </div>
 
@@ -355,6 +482,7 @@ export default function CreateSegmentPage() {
                           id="job-role"
                           placeholder="+ Add Job Role Interests (comma separated)"
                           onChange={(e) => handleArrayInputChange('jobRoleInterests', e.target.value)}
+                          value={formData.jobRoleInterests.join(', ')}
                         />
                       </div>
 
@@ -365,6 +493,7 @@ export default function CreateSegmentPage() {
                           id="industry"
                           placeholder="+ Add Student Industry Interests (comma separated)"
                           onChange={(e) => handleArrayInputChange('studentIndustryInterests', e.target.value)}
+                          value={formData.studentIndustryInterests.join(', ')}
                         />
                       </div>
 
@@ -395,8 +524,8 @@ export default function CreateSegmentPage() {
               </Accordion>
             </div>
             <div className="bg-white rounded-md border shadow-sm w-full">
-              <Accordion type="single" collapsible className="w-full">
-                <AccordionItem value="academics">
+              <Accordion type="single" collapsible className="w-full" defaultValue="location">
+                <AccordionItem value="location">
                   <AccordionTrigger className="px-4 py-3">
                     Location
                   </AccordionTrigger>
@@ -407,31 +536,31 @@ export default function CreateSegmentPage() {
                         <Label htmlFor="segment-name">
                           Student Location Preferences
                         </Label>
-                        <Input 
+                        <Input
                           id="location-pref"
                           name="studentLocationPreferences"
                           value={formData.studentLocationPreferences}
                           onChange={handleInputChange}
-                          placeholder="City" 
+                          placeholder="City"
                         />
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="segment-name">Current Location</Label>
-                        <Input 
+                        <Input
                           id="current-location"
                           name="currentLocation"
                           value={formData.currentLocation}
                           onChange={handleInputChange}
-                          placeholder="City" 
+                          placeholder="City"
                         />
                       </div>
                     </div>
 
-                    <Accordion type="single" collapsible className="w-full">
-                      <AccordionItem value="academics">
+                    <Accordion type="single" collapsible className="w-full" defaultValue="skills">
+                      <AccordionItem value="skills">
                         <AccordionTrigger className="px-4 py-3">
-                            <h1 className=" text-[18px] font-bold ">Skills & Experience</h1>
-                        </AccordionTrigger> 
+                          <h1 className=" text-[18px] font-bold ">Skills & Experience</h1>
+                        </AccordionTrigger>
                         <AccordionContent>
                           <div className="p-6 space-y-6">
                             {/* Segment Name */}
@@ -443,6 +572,7 @@ export default function CreateSegmentPage() {
                                 id="desired-skills"
                                 placeholder="Enter Desired Skills (comma separated)"
                                 onChange={(e) => handleArrayInputChange('desiredSkills', e.target.value)}
+                                value={formData.desiredSkills.join(', ')}
                               />
                             </div>
                             <div className="space-y-2">
@@ -451,6 +581,7 @@ export default function CreateSegmentPage() {
                                 id="coursework"
                                 placeholder="Enter Course Work (comma separated)"
                                 onChange={(e) => handleArrayInputChange('coursework', e.target.value)}
+                                value={formData.coursework.join(', ')}
                               />
                             </div>
                             <div className="space-y-2">
@@ -460,25 +591,55 @@ export default function CreateSegmentPage() {
                                   <div key={index} className="grid grid-cols-2 gap-4">
                                     <Input
                                       placeholder="Job title"
+                                      value={formData.workExperience[index]?.jobTitle || ''}
                                       onChange={(e) => handleWorkExperienceChange(index, 'jobTitle', e.target.value)}
+                                      className={getFieldError('workExperience') ? 'border-red-500' : ''}
                                     />
                                     <Input
                                       placeholder="Add Company"
+                                      value={formData.workExperience[index]?.company || ''}
                                       onChange={(e) => handleWorkExperienceChange(index, 'company', e.target.value)}
+                                      className={getFieldError('workExperience') ? 'border-red-500' : ''}
                                     />
                                   </div>
                                 ))}
+                                {getFieldError('workExperience') && (
+                                  <p className="text-sm text-red-500 flex items-center">
+                                    <AlertCircle className="h-4 w-4 mr-1" />
+                                    {getFieldError('workExperience')}
+                                  </p>
+                                )}
                               </div>
                             </div>
                             <div className="flex items-center space-x-2">
-                              <Checkbox id="terms" />
+                              <Checkbox
+                                id="terms"
+                                checked={acceptTerms}
+                                onCheckedChange={(checked) => {
+                                  setAcceptTerms(checked === true);
+                                  if (checked) {
+                                    setValidationErrors(prev =>
+                                      prev.filter(error => error.field !== 'terms')
+                                    );
+                                  }
+                                }}
+                                className={getFieldError('terms') ? 'border-red-500' : ''}
+                              />
                               <label
                                 htmlFor="terms"
-                                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                                className={`text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 ${getFieldError('terms') ? 'text-red-500' : ''
+                                  }`}
                               >
                                 Accept terms and conditions
+                                <span className="text-red-500 ml-1">*</span>
                               </label>
                             </div>
+                            {getFieldError('terms') && (
+                              <p className="text-sm text-red-500 flex items-center">
+                                <AlertCircle className="h-4 w-4 mr-1" />
+                                {getFieldError('terms')}
+                              </p>
+                            )}
                           </div>
                         </AccordionContent>
                       </AccordionItem>
@@ -487,13 +648,29 @@ export default function CreateSegmentPage() {
                 </AccordionItem>
               </Accordion>
             </div>
-            <div className=" w-full flex justify-end ">
-              <button 
-                className=" bg-[#1111F4] px-3 font-bold font-sans py-3 text-white rounded-lg w-[172px] "
+            <div className=" w-full flex justify-end gap-4">
+              <Button
+                variant="outline"
+                className="px-3 font-bold font-sans py-3 w-[172px]"
                 onClick={resetForm}
+                disabled={isSubmitting}
               >
                 Cancel
-              </button>
+              </Button>
+              <Button
+                className="bg-blue-600 hover:bg-blue-700 px-3 font-bold font-sans py-3 text-white w-[172px]"
+                onClick={handleSubmit}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Segment'
+                )}
+              </Button>
             </div>
           </div>
 
@@ -509,21 +686,22 @@ export default function CreateSegmentPage() {
                 <div>
                   <h3 className="font-medium text-sm">Major Group</h3>
                   <p className="text-sm text-gray-600">
-                    Computer Programming, Data Science, Computer Science,
-                    computer engineering
+                    {formData.majorGroup ? formData.majorGroup : "Not specified"}
                   </p>
                 </div>
 
                 <div>
                   <h3 className="font-medium text-sm">Class Of</h3>
                   <p className="text-sm text-gray-600">
-                    2024, 2023, 2022, 2021
+                    {formData.graduationClassStanding ? formData.graduationClassStanding : "Not specified"}
                   </p>
                 </div>
 
                 <div>
                   <h3 className="font-medium text-sm">Degree Type</h3>
-                  <p className="text-sm text-gray-600">Bachelors</p>
+                  <p className="text-sm text-gray-600">
+                    {formData.degreeTypes.length > 0 ? formData.degreeTypes.join(', ') : "Not specified"}
+                  </p>
                 </div>
 
                 <div>
@@ -531,25 +709,33 @@ export default function CreateSegmentPage() {
                     Student Location Preferences
                   </h3>
                   <p className="text-sm text-gray-600">
-                    San Francisco, California, United States
+                    {formData.studentLocationPreferences || "Not specified"}
                   </p>
                 </div>
 
                 <div>
-                  <h3 className="font-medium text-sm">Teaching Assistant</h3>
-                  <p className="text-sm text-gray-600">Yes</p>
+                  <h3 className="font-medium text-sm">Current Location</h3>
+                  <p className="text-sm text-gray-600">
+                    {formData.currentLocation || "Not specified"}
+                  </p>
                 </div>
 
                 <div>
                   <h3 className="font-medium text-sm">
-                    Has previous work experience
+                    Job Seeking Interest
                   </h3>
-                  <p className="text-sm text-gray-600">Yes</p>
+                  <p className="text-sm text-gray-600">
+                    {formData.jobSeekingInterests.length > 0 ? formData.jobSeekingInterests.join(', ') : "Not specified"}
+                  </p>
                 </div>
 
                 <div>
-                  <h3 className="font-medium text-sm">Leadership Experience</h3>
-                  <p className="text-sm text-gray-600">Yes</p>
+                  <h3 className="font-medium text-sm">Desired Skills</h3>
+                  <p className="text-sm text-gray-600">
+                    {formData.desiredSkills.length > 0
+                      ? formData.desiredSkills.slice(0, 3).join(', ') + (formData.desiredSkills.length > 3 ? '...' : '')
+                      : "Not specified"}
+                  </p>
                 </div>
               </CardContent>
             </Card>
